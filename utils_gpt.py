@@ -378,7 +378,7 @@ class Agent:
             self.model = genai.GenerativeModel(self.model_info)
             self._chat = self.model.start_chat(history=[])
 
-        elif self.model_info.startswith('gpt-realtime'):
+        elif self.model_info == 'gpt-realtime-2':
             pass  # WebSocket opened per call in chat()
 
         elif self.model_info in ['DeepSeek-R1']:
@@ -506,7 +506,7 @@ class Agent:
 
                 return "[ERROR]"
 
-        elif self.model_info.startswith('gemini-3.1-pro'):
+        elif self.model_info == 'gemini-3.1-pro-preview':
             # Frames + text directly, no video upload. Uses the current
             # google.genai SDK (google.generativeai is fully deprecated).
             try:
@@ -535,7 +535,7 @@ class Agent:
                 print(e)
                 return "[ERROR]"
 
-        elif self.model_info.startswith('gpt-realtime'):
+        elif self.model_info == 'gpt-realtime-2':
             # Frames + text over the WebSocket, no audio.
             try:
                 if self.inference_type == 'cot':
