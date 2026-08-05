@@ -122,7 +122,7 @@ python main_vlm_exp.py \
   --task_type shrec_empathic_pre.pickle \
   --video \
   --csv_path ../shrec_empathic.csv \
-  --images_dir ../shrec_empathic
+  --hf_repo_id MIT-personal-robots/shrec_empathic
 ```
 
 **Key Flags**:
@@ -130,7 +130,8 @@ python main_vlm_exp.py \
 - `--model`: Model to evaluate (see list below).
 - `--task_type`: Preprocessed `.pickle` file generated in Step 1.
 - `--video`: Include frame-based input (set this for vision-language models).
-- `--images_dir`: Directory with extracted image frames for each interaction.
+- `--hf_repo_id`: HF dataset repo to pull frame images from (e.g. `MIT-personal-robots/shrec_empathic`, `MIT-personal-robots/shrec_wellness_home`, `MIT-personal-robots/shrec_wellness_dorm`). Frames for each sample's time window are downloaded on demand directly from the dataset — no local video file or manually-extracted image folder needed.
+- `--images_dir`: No longer required for normal use. Kept only as a fallback for older CSV exports that don't have a `frame_paths` column.
 
 ---
 
