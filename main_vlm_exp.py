@@ -13,12 +13,14 @@ import requests
 from collections import Counter
 import pdb
 from utils import *
-import pandas as pd 
+import pandas as pd
 from tqdm import tqdm
+from dotenv import load_dotenv
 
+load_dotenv()
 random.seed(42)
-openai.api_key=os.environ["OPENAI_API_KEY"]
-genai.configure(api_key=os.environ["GOOGLE_GENAI_API_KEY"])
+openai.api_key = os.environ.get("OPENAI_API_KEY", "")
+genai.configure(api_key=os.environ.get("GOOGLE_GENAI_API_KEY") or os.environ.get("GEMINI_KEY", ""))
 
 
 parser = argparse.ArgumentParser(description="Causal inference with LLMs")
@@ -30,6 +32,8 @@ parser.add_argument("--seed", type=str, default=0)
 parser.add_argument("--video", action="store_true")
 parser.add_argument("--csv_path", type=str, default='../shrec_empathic.csv')
 parser.add_argument("--images_dir", type=str, default='../shrec_empathic')
+parser.add_argument("--hf_repo_id", type=str, default='MIT-personal-robots/shrec_empathic',
+                    help="HF dataset repo to pull frame images from, e.g. MIT-personal-robots/shrec_wellness_home")
 
 args = parser.parse_args()
 
@@ -73,7 +77,10 @@ else:
 
 print('Initializing Agent...')
 ##INITIALIZE AGENT## Uncomment later after debug
-from vlmeval.config import supported_VLM
+_VLMEVAL_MODELS = ['paligemma', 'llava_next_llama3', 'llava_video_qwen2_7b', 'InternVL2-8B',
+                    'MiniCPM-V-2_6', 'Llama-3.2-3B', 'Llama-3.2-3B-Instruct', 'Llama-3.2-11B-Vision-Instruct']
+if model_name in _VLMEVAL_MODELS:
+    from vlmeval.config import supported_VLM
 
 if model_name == 'paligemma':
     model = supported_VLM['paligemma-3b-mix-448']()
@@ -105,7 +112,7 @@ if model_name == 'GPT4o_MINI_Lang':
 if model_name == 'GPT4o_Lang':
     from utils_gpt import * 
     model = Agent(base_prompt, model_info='gpt-4o', inference_type='lang-only', task_type=args.task_type)
-if model_name in ['gemini-1.5-flash', 'gemini-2.0-flash-exp', 'gemini-1.5-flash-8b', 'gemini-1.5-pro', 'llava_video_next', 'llava_video_next_7b_dpo', 'o1', 'o1-mini']:
+if model_name in ['gemini-1.5-flash', 'gemini-2.0-flash-exp', 'gemini-1.5-flash-8b', 'gemini-1.5-pro', 'gemini-3.1-pro-preview', 'gpt-realtime-2', 'llava_video_next', 'llava_video_next_7b_dpo', 'o1', 'o1-mini']:
     from utils_gpt import * 
     model = Agent(base_prompt, model_info=model_name, inference_type=None, task_type=args.task_type)
 if model_name in ['GPT4o_Image_few_shot']:
@@ -143,18 +150,29 @@ for i, sample in enumerate(processed_dataset):
         
 
         frame_rate = df[df['file_name'] == video_id]['framerate'].item()
+        row_frame_paths = ast.literal_eval(df[df['file_name'] == video_id]['frame_paths'].item())
         frames_dir = os.path.join(images_dir, video_id)
 
-        img_path_list = get_frame_paths(frames_dir, sample['timestamp']['start'] * frame_rate, sample['timestamp']['end']* frame_rate)
-        
+        # Pulled directly from HF on demand; falls back to local images_dir
+        # if this row has no frame_paths (e.g. an older CSV export).
+        if row_frame_paths:
+            img_path_list = download_hf_frames(
+                repo_id=args.hf_repo_id, video_id=video_id, frame_paths=row_frame_paths,
+                framerate=frame_rate, timestamp_range=(sample['timestamp']['start'], sample['timestamp']['end']),
+                num_images=num_images,
+            )
+        else:
+            img_path_list = get_frame_paths(frames_dir, sample['timestamp']['start'] * frame_rate, sample['timestamp']['end']* frame_rate)
 
 
-        if model_name in ['o1', 'o1-mini','gemini-1.5-flash', 'gemini-2.0-flash-exp', 'gemini-1.5-flash-8b', 'gemini-1.5-pro', 'llava_video_next', 'llava_video_next_7b_dpo', 'GPT4o_Image_cot', 'GPT4o_Image_few_shot', "GPT4o_MINI_Lang", "GPT4o_Lang", "GPT4o_MINI_Image", "GPT4o_Image"]:
+
+        if model_name in ['o1', 'o1-mini','gemini-1.5-flash', 'gemini-2.0-flash-exp', 'gemini-1.5-flash-8b', 'gemini-1.5-pro', 'gemini-3.1-pro-preview', 'gpt-realtime-2', 'llava_video_next', 'llava_video_next_7b_dpo', 'GPT4o_Image_cot', 'GPT4o_Image_few_shot', "GPT4o_MINI_Lang", "GPT4o_Lang", "GPT4o_MINI_Image", "GPT4o_Image"]:
             print('extract video for gemini/openai models')
             base64Frames = process_images_base64(img_path_list)
-            
+
             vid_path = ""
-            if 'gemini' in model_name:
+            # gemini-3.1-pro uses frames directly, not a reconstructed video
+            if 'gemini' in model_name and model_name != 'gemini-3.1-pro-preview':
                 vid_path = fill_and_write_video(frames_dir, './tmp', fps=frame_rate)
             
             if 'transcript' in sample.keys():
@@ -404,7 +422,7 @@ for i, sample in enumerate(processed_dataset):
     else:
         img_path_list.append(full_prompt)
 
-    if model_name in ['o1', 'o1-mini', 'gemini-1.5-flash', 'gemini-2.0-flash-exp', 'gemini-1.5-flash-8b', 'gemini-1.5-pro', 'llava_video_next', 'llava_video_next_7b_dpo', 'GPT4o_Image_cot', "GPT4o_MINI_Lang", "GPT4o_Lang", "GPT4o_MINI_Image", "GPT4o_Image"]:
+    if model_name in ['o1', 'o1-mini', 'gemini-1.5-flash', 'gemini-2.0-flash-exp', 'gemini-1.5-flash-8b', 'gemini-1.5-pro', 'gemini-3.1-pro-preview', 'gpt-realtime-2', 'llava_video_next', 'llava_video_next_7b_dpo', 'GPT4o_Image_cot', "GPT4o_MINI_Lang", "GPT4o_Lang", "GPT4o_MINI_Image", "GPT4o_Image"]:
         response = model.chat(full_prompt, img_frames=base64Frames, transcription=transcription, vid_path=vid_path, examples=None)
     elif model_name == 'GPT4o_Image_few_shot':
         examples = get_few_shot_examples(processed_dataset, sample)
@@ -434,7 +452,6 @@ for i, sample in enumerate(processed_dataset):
     results.append({'question': full_prompt, 'response': response, 'label': answer, 'rationale': reason})
  
     print("[INFO] Total number of processed results:", "{}/{}".format(str(count),str(len(processed_dataset))))
-    break
 
 folder_path = os.path.join(os.getcwd(), 'output')
 if not os.path.exists(folder_path):

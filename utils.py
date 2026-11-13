@@ -6,6 +6,7 @@ import os
 import cv2
 import base64
 from natsort import natsorted
+from huggingface_hub import hf_hub_download
 
 def find_overlapping_interval_groups_pair(intervals1, intervals2):
     # Sort intervals based on start value
@@ -283,35 +284,32 @@ def get_majority(items):
     else:
         return None
 
-def sample_images_from_video(video_path, timestamp_range, num_images, output_dir):
-    os.makedirs(output_dir, exist_ok=True)
-    cap = cv2.VideoCapture(video_path)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+def download_hf_frames(repo_id, video_id, frame_paths, framerate, timestamp_range,
+                        num_images, cache_dir=None, repo_type="dataset"):
+    """Download the frames for a time range directly from the HF dataset repo
+    (frame_index / framerate = seconds), instead of extracting from video."""
     start_time, end_time = timestamp_range
-    start_frame = int(start_time * fps)
-    end_frame = min(int(end_time * fps), total_frames - 1)
-    frame_step = max(1, (end_frame - start_frame) // num_images)
-    current_frame = start_frame
+    start_frame = start_time * framerate
+    end_frame = end_time * framerate
+
+    def frame_index(path):
+        return int(os.path.splitext(os.path.basename(path))[0])
+
+    in_range = [p for p in frame_paths if start_frame <= frame_index(p) <= end_frame]
+    if not in_range:
+        print(f"VIDEO CORRUPT: no frames in range for {video_id} [{start_time}, {end_time}]")
+        return []
+
+    in_range = natsorted(in_range)
+    step = max(1, len(in_range) // num_images)
+    selected = in_range[::step][:num_images]
 
     img_path_list = []
-    for _ in range(num_images):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame)
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        tmp_video_path = video_path.replace("/", "_").replace(".mp4", "")
-        image_path = os.path.join(output_dir, f"frame_{current_frame//fps}_{tmp_video_path}.jpg")
-        cv2.imwrite(image_path, frame)
-        current_frame += frame_step
-        img_path_list.append(image_path)
-
-    if len(img_path_list) == 0:
-        pdb.set_trace()
-        print('VIDEO CORRUPT')
-
-    cap.release()
+    for frame_path in selected:
+        local_path = hf_hub_download(
+            repo_id=repo_id, repo_type=repo_type, filename=frame_path, cache_dir=cache_dir,
+        )
+        img_path_list.append(local_path)
 
     return img_path_list
 
@@ -393,71 +391,7 @@ def process_images_base64(img_paths, output_dir=None):
     return base64Frames
 
 
-def sample_images_from_video_in_sec(video_path, timestamp_range, num_images, output_dir):
-    os.makedirs(output_dir, exist_ok=True)
-    # Open the video file
-    cap = cv2.VideoCapture(video_path)
-
-    # Check if the video file was successfully opened
-    if not cap.isOpened():
-        print("Error: Could not open video.")
-        return None
-    
-    start_time = timestamp_range[0]
-    end_time = timestamp_range[1]
-        
-    step = (end_time - start_time)//num_images
-    current_time = start_time
-
-    img_path_list = []
-    for _ in range(num_images):
-
-        # Set the video position to the desired time
-        cap.set(cv2.CAP_PROP_POS_MSEC, current_time * 1000)
-
-        # Read the frame at the specified time
-        ret, frame = cap.read()
-
-        if ret:
-            # Generate a default filename if not provided
-            tmp_video_path = video_path.replace("/", "_").replace(".mp4", "")
-            image_path = os.path.join(output_dir, f"time_{current_time}_{tmp_video_path}.jpg")
-            cv2.imwrite(image_path, frame)
-            current_time += step
-            img_path_list.append(image_path)
-            print(f"Frame saved as {image_path}")
-
-    pdb.set_trace()
-    if len(img_path_list) == 0:
-        print('VIDEO CORRUPT')
-
-    cap.release()
-
-    return img_path_list
-
-def trim_video(video_path, timestamp_range, output_dir):
-    os.makedirs(output_dir, exist_ok=True)
-    cap = cv2.VideoCapture(video_path)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    start_time, end_time = timestamp_range
-    start_frame = int(start_time * fps)
-    end_frame = min(int(end_time * fps), total_frames - 1)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-
-    output_video_path = os.path.join(output_dir, 'trimmed_video.mp4')
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # You can change the codec as needed
-    out = cv2.VideoWriter(output_video_path, fourcc, fps, (int(cap.get(3)), int(cap.get(4))))
-
-    for current_frame in range(start_frame, end_frame + 1):
-        ret, frame = cap.read()
-        if not ret:
-            break
-        out.write(frame)
-    cap.release()
-    out.release()
-    return output_video_path
+# sample_images_from_video_in_sec and trim_video removed — see download_hf_frames() above.
 
 def encode_image(image_path):
     with open(image_path, "rb") as image_file:

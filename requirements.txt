@@ -1,7 +1,7 @@
 av==14.2.0
 datasets==3.6.0
-decord==0.6.0
 easydict==1.13
+google-genai>=0.3.0
 huggingface_hub==0.26.2
 matplotlib==3.5.1
 natsort==8.2.0
@@ -12,11 +12,16 @@ pandas==1.4.2
 Pillow==11.2.1
 protobuf==6.30.2
 pydantic==2.11.4
+python-dotenv>=1.0.0
 Requests==2.32.3
 scikit_learn==1.0.2
-torch==2.5.0
 torch==2.7.0
-torchvision==0.15.2
 torchvision==0.22.0
 tqdm==4.67.1
 transformers==4.46.2
+websockets>=12.0
+
+# decord (used only by the video-chat2 model path) has no macOS wheel and is
+# imported lazily inside load_video() in utils_gpt.py — install it yourself
+# if you need that specific model:
+# decord==0.6.0

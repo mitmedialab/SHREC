@@ -5,6 +5,11 @@ import os
 import pandas as pd
 import numpy as np
 import time
+import asyncio
+import base64
+import io
+import json
+import websockets
 import openai
 from openai import OpenAI
 import google.generativeai as genai
@@ -20,7 +25,7 @@ from transformers import pipeline
 
 
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-genai.configure(api_key=os.environ["GOOGLE_GENAI_API_KEY"])
+genai.configure(api_key=os.environ.get("GOOGLE_GENAI_API_KEY") or os.environ.get("GEMINI_KEY", ""))
 openai.api_key=os.environ["OPENAI_API_KEY"]
 
 
@@ -28,16 +33,13 @@ from transformers import AutoModel
 
 import torch
 from transformers import StoppingCriteria, StoppingCriteriaList
-from decord import VideoReader, cpu
 import numpy as np
 from PIL import Image
 from torchvision.transforms import PILToTensor
 import matplotlib.pyplot as plt
 from easydict import EasyDict
 from torchvision import transforms
-import decord
 import time
-decord.bridge.set_bridge("torch")
 
 
 def get_few_shot_examples(processed_dataset, current_sample, num_examples=3):
@@ -222,6 +224,9 @@ def get_index(num_frames, num_segments):
 
 
 def load_video(video_path, num_segments=8, return_msg=False, resolution=224, hd_num=3, padding=False):
+    import decord  # macOS has no decord wheel; only needed here
+    from decord import VideoReader, cpu
+    decord.bridge.set_bridge("torch")
     vr = VideoReader(video_path, ctx=cpu(0), num_threads=1)
     num_frames = len(vr)
     frame_indices = get_index(num_frames, num_segments)
@@ -313,6 +318,55 @@ def read_video_pyav(container, indices):
             frames.append(frame)
     return np.stack([x.to_ndarray(format="rgb24") for x in frames])
 
+async def _gpt_realtime_ws_call(model_name, prompt, img_frames):
+    """Call an OpenAI Realtime model over WebSocket with images + text (no audio)."""
+    ws_url = f"wss://api.openai.com/v1/realtime?model={model_name}"
+    headers = {"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"}
+
+    async with websockets.connect(ws_url, additional_headers=headers) as ws:
+        await ws.recv()  # session.created
+
+        await ws.send(json.dumps({
+            "type": "session.update",
+            "session": {
+                "type": "realtime",
+                "output_modalities": ["text"],
+                "instructions": "You are a socially intelligent agent. Be concise.",
+            }
+        }))
+        await ws.recv()  # session.updated
+
+        content = []
+        if img_frames:
+            content.append({"type": "input_text", "text": "These are the frames from the video."})
+        for frame_b64 in img_frames:
+            content.append({
+                "type": "input_image",
+                "image_url": f"data:image/jpeg;base64,{frame_b64}",
+            })
+        content.append({"type": "input_text", "text": prompt})
+
+        await ws.send(json.dumps({
+            "type": "conversation.item.create",
+            "item": {"type": "message", "role": "user", "content": content},
+        }))
+        await ws.recv()  # conversation.item.created
+        await ws.send(json.dumps({"type": "response.create"}))
+
+        parts = []
+        async for raw in ws:
+            event = json.loads(raw)
+            etype = event.get("type", "")
+            if etype == "response.output_text.delta":
+                parts.append(event.get("delta", ""))
+            elif etype == "response.done":
+                break
+            elif etype == "error":
+                print(f"  [API ERROR] {event.get('error')}")
+                break
+        return "".join(parts)
+
+
 class Agent:
     def __init__(self, instruction, model_info=None, inference_type='zero-shot', task_type='detection'):
         self.instruction = instruction
@@ -323,7 +377,9 @@ class Agent:
         if 'gemini' in self.model_info:
             self.model = genai.GenerativeModel(self.model_info)
             self._chat = self.model.start_chat(history=[])
-        
+
+        elif self.model_info == 'gpt-realtime-2':
+            pass  # WebSocket opened per call in chat()
 
         elif self.model_info in ['DeepSeek-R1']:
             self.model = pipeline("text-generation", model="deepseek-ai/DeepSeek-R1", trust_remote_code=True)
@@ -447,7 +503,49 @@ class Agent:
                 return response.text
             except Exception as e:
                 print(e)
-                
+
+                return "[ERROR]"
+
+        elif self.model_info == 'gemini-3.1-pro-preview':
+            # Frames + text directly, no video upload. Uses the current
+            # google.genai SDK (google.generativeai is fully deprecated).
+            try:
+                if self.inference_type == 'cot':
+                    message += " Let's think step-by-step."
+
+                from google import genai as genai_new
+                from google.genai import types
+
+                gemini_client = genai_new.Client(api_key=os.environ.get("GEMINI_KEY", ""))
+                parts = [
+                    types.Part.from_bytes(data=base64.b64decode(frame), mime_type="image/jpeg")
+                    for frame in (img_frames or [])
+                ]
+                parts.append(types.Part.from_text(text=message))
+
+                response = gemini_client.models.generate_content(
+                    model=self.model_info,
+                    contents=[types.Content(role="user", parts=parts)],
+                    config=types.GenerateContentConfig(
+                        system_instruction="You are a socially intelligent agent. Be concise.",
+                    ),
+                )
+                return response.text or ""
+            except Exception as e:
+                print(e)
+                return "[ERROR]"
+
+        elif self.model_info == 'gpt-realtime-2':
+            # Frames + text over the WebSocket, no audio.
+            try:
+                if self.inference_type == 'cot':
+                    message += " Let's think step-by-step."
+
+                return asyncio.run(
+                    _gpt_realtime_ws_call(self.model_info, message, img_frames or [])
+                )
+            except Exception as e:
+                print(e)
                 return "[ERROR]"
 
         elif self.model_info in ['gpt-4v', 'gpt-4o', 'gpt-4o-mini', 'o1', 'o1-mini']:
